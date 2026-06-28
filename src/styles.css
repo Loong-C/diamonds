@@ -747,6 +747,12 @@ meter::-webkit-meter-optimum-value {
 }
 
 .attack-feedback {
+  position: fixed;
+  top: clamp(16px, 2vw, 28px);
+  right: clamp(16px, 2vw, 28px);
+  z-index: 30;
+  width: min(280px, calc(100vw - 32px));
+  pointer-events: none;
   display: grid;
   grid-template-columns: 34px 1fr;
   align-items: center;
@@ -886,7 +892,6 @@ meter::-webkit-meter-optimum-value {
   }
 
   .turn-hint,
-  .attack-feedback,
   .end-turn-button,
   .quiet-button {
     grid-column: auto;
@@ -944,6 +949,12 @@ meter::-webkit-meter-optimum-value {
   .card-row,
   .zone--wide .card-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .attack-feedback {
+    left: 12px;
+    right: 12px;
+    width: auto;
   }
 }
 

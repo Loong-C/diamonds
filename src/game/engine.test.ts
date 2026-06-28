@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { chooseAiCommand } from "./ai";
 import { createDeck } from "./cards";
 import { applyCommand, createGame, getLegalCommands, isCooling } from "./engine";
 import type { GameState } from "./types";
@@ -92,5 +93,28 @@ describe("宝石寄售规则引擎", () => {
       attackerId: "attacker",
       targetId: "target",
     });
+  });
+
+  it("returns control to the human with end turn available after an AI attack", () => {
+    let state = createGame({ mode: "ai", seed: 6, firstPlayer: 1 });
+    const attacker = { ...createDeck().find((card) => card.name === "钻石")!, instanceId: "ai-attacker" };
+    const target = { ...createDeck().find((card) => card.name === "磷叶石")!, instanceId: "human-target", listedOnTurn: 0 };
+    state.players[1].storage.push(attacker);
+    state.players[0].counter.push(target);
+
+    const aiCommand = chooseAiCommand(state);
+    expect(aiCommand).toEqual({
+      type: "attack",
+      attackerId: "ai-attacker",
+      targetId: "human-target",
+    });
+
+    state = applyCommand(state, aiCommand);
+
+    expect(state.currentPlayer).toBe(0);
+    expect(getLegalCommands(state)).toContainEqual({ type: "endTurn" });
+
+    state = applyCommand(state, { type: "endTurn" });
+    expect(state.currentPlayer).toBe(1);
   });
 });

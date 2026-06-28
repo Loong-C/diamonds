@@ -12,7 +12,8 @@ import {
   Tags,
   UsersRound,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, PointerEvent } from "react";
 import mineralTabletop from "./assets/mineral-tabletop.png";
 import { chooseAiCommand } from "./game/ai";
 import { COUNTER_LIMIT, STORAGE_LIMIT, WINNING_COINS } from "./game/cards";
@@ -136,6 +137,17 @@ function getAttackFeedback(command: GameCommand, sourceState: GameState): Attack
   };
 }
 
+function getSafeAiCommand(sourceState: GameState): GameCommand | null {
+  const legalCommands = getLegalCommands(sourceState);
+  const preferredCommand = chooseAiCommand(sourceState);
+
+  if (isLegalCommand(legalCommands, preferredCommand)) {
+    return preferredCommand;
+  }
+
+  return legalCommands.find((command) => command.type === "endTurn") ?? legalCommands[0] ?? null;
+}
+
 function App() {
   const [mode, setMode] = useState<GameMode>("ai");
   const [state, setState] = useState<GameState>(() => createFreshGame("ai"));
@@ -144,6 +156,9 @@ function App() {
   const [attackTarget, setAttackTarget] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [attackFeedback, setAttackFeedback] = useState<AttackFeedback | null>(null);
+  const attackSourceRef = useRef<string | null>(null);
+  const attackTargetRef = useRef<string | null>(null);
+  const pendingAttackFeedback = useRef<AttackFeedback | null>(null);
 
   const legalCommands = useMemo(() => getLegalCommands(state), [state]);
   const isAiThinking = state.mode === "ai" && state.currentPlayer === 1 && state.winner === null;
@@ -151,10 +166,19 @@ function App() {
 
   useEffect(() => {
     setPendingAction(null);
-    setAttackSource(null);
-    setAttackTarget(null);
+    clearAttackSelection();
     setActionNotice(null);
   }, [state.currentPlayer, state.turn]);
+
+  useEffect(() => {
+    if (!pendingAttackFeedback.current) {
+      return;
+    }
+
+    const feedback = pendingAttackFeedback.current;
+    pendingAttackFeedback.current = null;
+    setAttackFeedback(feedback);
+  }, [state]);
 
   useEffect(() => {
     if (!isAiThinking) {
@@ -162,12 +186,23 @@ function App() {
     }
 
     const timer = window.setTimeout(() => {
-      const command = chooseAiCommand(state);
-      const feedback = getAttackFeedback(command, state);
-      if (feedback) {
-        setAttackFeedback(feedback);
-      }
-      setState((current) => applyCommand(current, command));
+      setState((current) => {
+        if (current.mode !== "ai" || current.currentPlayer !== 1 || current.winner !== null) {
+          return current;
+        }
+
+        const command = getSafeAiCommand(current);
+        if (!command) {
+          return current;
+        }
+
+        const feedback = getAttackFeedback(command, current);
+        if (feedback) {
+          pendingAttackFeedback.current = feedback;
+        }
+
+        return applyCommand(current, command);
+      });
     }, 650);
 
     return () => window.clearTimeout(timer);
@@ -190,7 +225,7 @@ function App() {
     const command: GameCommand = { type: "attack", attackerId: attackSource, targetId: attackTarget };
     const feedback = getAttackFeedback(command, state);
     if (feedback) {
-      setAttackFeedback(feedback);
+      showAttackFeedbackAfterState(feedback);
     }
     setState((current) => applyCommand(current, command));
   }, [attackSource, attackTarget, isAiThinking, pendingAction, state.winner]);
@@ -198,11 +233,36 @@ function App() {
   function restart(nextMode = mode) {
     setMode(nextMode);
     setPendingAction(null);
-    setAttackSource(null);
-    setAttackTarget(null);
+    clearAttackSelection();
     setActionNotice(null);
     setAttackFeedback(null);
+    pendingAttackFeedback.current = null;
     setState(createFreshGame(nextMode));
+  }
+
+  function clearAttackSelection() {
+    attackSourceRef.current = null;
+    attackTargetRef.current = null;
+    setAttackSource(null);
+    setAttackTarget(null);
+  }
+
+  function selectAttackSource(cardId: string | null) {
+    attackSourceRef.current = cardId;
+    setAttackSource(cardId);
+  }
+
+  function selectAttackTarget(cardId: string | null) {
+    attackTargetRef.current = cardId;
+    setAttackTarget(cardId);
+  }
+
+  function showAttackFeedbackAfterState(feedback: AttackFeedback | null) {
+    pendingAttackFeedback.current = feedback;
+
+    if (!feedback) {
+      setAttackFeedback(null);
+    }
   }
 
   function runCommand(command: GameCommand) {
@@ -217,10 +277,26 @@ function App() {
 
     setActionNotice(null);
     const feedback = getAttackFeedback(command, state);
-    if (feedback) {
-      setAttackFeedback(feedback);
-    }
+    showAttackFeedbackAfterState(feedback);
     setState((current) => applyCommand(current, command));
+  }
+
+  function runAttackCommand(attackerId: string, targetId: string) {
+    const command: GameCommand = { type: "attack", attackerId, targetId };
+    if (!isLegalCommand(getLegalCommands(state), command)) {
+      setActionNotice(describeIllegalCommand(command));
+      return;
+    }
+
+    const feedback = getAttackFeedback(command, state);
+    if (feedback) {
+      pendingAttackFeedback.current = feedback;
+    }
+
+    setActionNotice(null);
+    setPendingAction(null);
+    clearAttackSelection();
+    setState(applyCommand(state, command));
   }
 
   function selectAction(type: (typeof actionConfig)[number]["type"]) {
@@ -238,8 +314,7 @@ function App() {
       return;
     }
 
-    setAttackSource(null);
-    setAttackTarget(null);
+    clearAttackSelection();
     setActionNotice(null);
     setPendingAction((current) => (current === type ? null : type));
   }
@@ -269,14 +344,15 @@ function App() {
     }
 
     if (zone === "storage" && ownerId === state.currentPlayer) {
-      if (attackTarget) {
-        runCommand({ type: "attack", attackerId: card.instanceId, targetId: attackTarget });
+      const selectedTarget = attackTargetRef.current;
+      if (selectedTarget) {
+        runAttackCommand(card.instanceId, selectedTarget);
         return;
       }
 
       if (hasLegalAttack({ attackerId: card.instanceId })) {
         setActionNotice(null);
-        setAttackSource(card.instanceId);
+        selectAttackSource(card.instanceId);
       } else {
         setActionNotice("这张宝石不能作为当前攻击宝石。攻击宝石必须在己方收纳区、未冷却，并且硬度高于目标。");
       }
@@ -284,18 +360,62 @@ function App() {
     }
 
     if (zone === "counter" && ownerId === opponentOf(state.currentPlayer)) {
-      if (attackSource) {
-        runCommand({ type: "attack", attackerId: attackSource, targetId: card.instanceId });
+      const selectedSource = attackSourceRef.current;
+      if (selectedSource) {
+        runAttackCommand(selectedSource, card.instanceId);
         return;
       }
 
       if (hasLegalAttack({ targetId: card.instanceId })) {
         setActionNotice(null);
-        setAttackTarget(card.instanceId);
+        selectAttackTarget(card.instanceId);
       } else {
         setActionNotice("这个目标当前不能被攻击。攻击宝石硬度必须严格高于目标宝石。");
       }
     }
+  }
+
+  function handleBoardPointerUp(event: PointerEvent<HTMLElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const cardElement = (event.target as HTMLElement).closest<HTMLButtonElement>(".gem-card");
+    if (!cardElement) {
+      return;
+    }
+
+    const cardId = cardElement.dataset.cardId;
+    const zone = cardElement.dataset.zone as ZoneKind | undefined;
+    if (!cardId || !zone) {
+      return;
+    }
+
+    const card = findCard(cardId);
+    if (!card) {
+      return;
+    }
+
+    const ownerId = cardElement.dataset.ownerId === "" ? undefined : (Number(cardElement.dataset.ownerId) as PlayerId);
+    event.preventDefault();
+    window.setTimeout(() => handleCardClick({ zone, ownerId, card }), 0);
+  }
+
+  function findCard(cardId: string): GemCard | null {
+    for (const card of state.mine) {
+      if (card.instanceId === cardId) {
+        return card;
+      }
+    }
+
+    for (const player of state.players) {
+      const card = [...player.storage, ...player.counter].find((item) => item.instanceId === cardId);
+      if (card) {
+        return card;
+      }
+    }
+
+    return null;
   }
 
   function hasLegalAttack(filter: { attackerId?: string; targetId?: string }): boolean {
@@ -323,11 +443,17 @@ function App() {
     }
 
     if (pendingAction === "attack" && zone === "storage" && ownerId === state.currentPlayer) {
-      return hasLegalAttack({ attackerId: card.instanceId, targetId: attackTarget ?? undefined });
+      return hasLegalAttack({
+        attackerId: card.instanceId,
+        targetId: attackTargetRef.current ?? attackTarget ?? undefined,
+      });
     }
 
     if (pendingAction === "attack" && zone === "counter" && ownerId === opponentOf(state.currentPlayer)) {
-      return hasLegalAttack({ attackerId: attackSource ?? undefined, targetId: card.instanceId });
+      return hasLegalAttack({
+        attackerId: attackSourceRef.current ?? attackSource ?? undefined,
+        targetId: card.instanceId,
+      });
     }
 
     return false;
@@ -374,7 +500,7 @@ function App() {
 
   const backgroundStyle = {
     "--tabletop-image": `url(${mineralTabletop})`,
-  } as React.CSSProperties;
+  } as CSSProperties;
 
   return (
     <main className="game-shell" style={backgroundStyle}>
@@ -420,7 +546,7 @@ function App() {
         </section>
       </aside>
 
-      <section className="board" aria-label="游戏棋盘">
+      <section className="board" aria-label="游戏棋盘" onPointerUpCapture={handleBoardPointerUp}>
         <PlayerBand
           playerId={1}
           state={state}
@@ -728,7 +854,14 @@ function GemCardView({
       data-owner-id={ownerId ?? ""}
       data-value={card.value}
       data-zone={zone}
-      onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") {
+          return;
+        }
+
+        event.preventDefault();
+        onClick();
+      }}
     >
       <span className="gem-card__name">{card.name}</span>
       <span className="gem-card__stone" aria-hidden="true" />
