@@ -63,7 +63,7 @@ function opponentOf(playerId: PlayerId): PlayerId {
   return playerId === 0 ? 1 : 0;
 }
 
-function describePending(pendingAction: PendingAction, attackSource: string | null): string {
+function describePending(pendingAction: PendingAction, attackSource: string | null, attackTarget: string | null): string {
   if (pendingAction === "collect") {
     return "从公共矿区点选 1 张宝石放入当前玩家收纳区。";
   }
@@ -77,7 +77,15 @@ function describePending(pendingAction: PendingAction, attackSource: string | nu
   }
 
   if (pendingAction === "attack") {
-    return attackSource ? "再点选对方柜台区中硬度更低的目标。" : "先点选当前玩家收纳区中非冷却的攻击宝石。";
+    if (attackSource) {
+      return "再点选对方柜台区中硬度更低的目标。";
+    }
+
+    if (attackTarget) {
+      return "再点选当前玩家收纳区中硬度更高的攻击宝石。";
+    }
+
+    return "点选己方攻击宝石或对方柜台目标，任一顺序都可以。";
   }
 
   return "选择右侧行动，或直接结束回合。";
@@ -100,6 +108,7 @@ function App() {
   const [state, setState] = useState<GameState>(() => createFreshGame("ai"));
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [attackSource, setAttackSource] = useState<string | null>(null);
+  const [attackTarget, setAttackTarget] = useState<string | null>(null);
 
   const legalCommands = useMemo(() => getLegalCommands(state), [state]);
   const isAiThinking = state.mode === "ai" && state.currentPlayer === 1 && state.winner === null;
@@ -108,6 +117,7 @@ function App() {
   useEffect(() => {
     setPendingAction(null);
     setAttackSource(null);
+    setAttackTarget(null);
   }, [state.currentPlayer, state.turn]);
 
   useEffect(() => {
@@ -122,10 +132,21 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [isAiThinking, state]);
 
+  useEffect(() => {
+    if (pendingAction !== "attack" || !attackSource || !attackTarget || isAiThinking || state.winner !== null) {
+      return;
+    }
+
+    setState((current) =>
+      applyCommand(current, { type: "attack", attackerId: attackSource, targetId: attackTarget }),
+    );
+  }, [attackSource, attackTarget, isAiThinking, pendingAction, state.winner]);
+
   function restart(nextMode = mode) {
     setMode(nextMode);
     setPendingAction(null);
     setAttackSource(null);
+    setAttackTarget(null);
     setState(createFreshGame(nextMode));
   }
 
@@ -148,6 +169,7 @@ function App() {
     }
 
     setAttackSource(null);
+    setAttackTarget(null);
     setPendingAction((current) => (current === type ? null : type));
   }
 
@@ -172,19 +194,37 @@ function App() {
       return;
     }
 
-    if (!attackSource && zone === "storage" && ownerId === state.currentPlayer) {
-      const hasAttack = legalCommands.some(
-        (command) => command.type === "attack" && command.attackerId === card.instanceId,
-      );
-      if (hasAttack) {
+    if (zone === "storage" && ownerId === state.currentPlayer) {
+      if (attackTarget) {
+        runCommand({ type: "attack", attackerId: card.instanceId, targetId: attackTarget });
+        return;
+      }
+
+      if (hasLegalAttack({ attackerId: card.instanceId })) {
         setAttackSource(card.instanceId);
       }
       return;
     }
 
-    if (attackSource && zone === "counter" && ownerId === opponentOf(state.currentPlayer)) {
-      runCommand({ type: "attack", attackerId: attackSource, targetId: card.instanceId });
+    if (zone === "counter" && ownerId === opponentOf(state.currentPlayer)) {
+      if (attackSource) {
+        runCommand({ type: "attack", attackerId: attackSource, targetId: card.instanceId });
+        return;
+      }
+
+      if (hasLegalAttack({ targetId: card.instanceId })) {
+        setAttackTarget(card.instanceId);
+      }
     }
+  }
+
+  function hasLegalAttack(filter: { attackerId?: string; targetId?: string }): boolean {
+    return legalCommands.some(
+      (command) =>
+        command.type === "attack" &&
+        (!filter.attackerId || command.attackerId === filter.attackerId) &&
+        (!filter.targetId || command.targetId === filter.targetId),
+    );
   }
 
   function isSelectable(context: CardClickContext): boolean {
@@ -202,16 +242,12 @@ function App() {
       return isLegalCommand(legalCommands, { type: "sell", cardId: card.instanceId });
     }
 
-    if (pendingAction === "attack" && !attackSource && zone === "storage" && ownerId === state.currentPlayer) {
-      return legalCommands.some((command) => command.type === "attack" && command.attackerId === card.instanceId);
+    if (pendingAction === "attack" && zone === "storage" && ownerId === state.currentPlayer) {
+      return hasLegalAttack({ attackerId: card.instanceId, targetId: attackTarget ?? undefined });
     }
 
-    if (pendingAction === "attack" && attackSource && zone === "counter" && ownerId === opponentOf(state.currentPlayer)) {
-      return isLegalCommand(legalCommands, {
-        type: "attack",
-        attackerId: attackSource,
-        targetId: card.instanceId,
-      });
+    if (pendingAction === "attack" && zone === "counter" && ownerId === opponentOf(state.currentPlayer)) {
+      return hasLegalAttack({ attackerId: attackSource ?? undefined, targetId: card.instanceId });
     }
 
     return false;
@@ -232,11 +268,21 @@ function App() {
         </div>
 
         <div className="mode-switch" role="group" aria-label="模式选择">
-          <button className={mode === "ai" ? "is-active" : ""} type="button" onClick={() => restart("ai")}>
+          <button
+            className={mode === "ai" ? "is-active" : ""}
+            data-mode="ai"
+            type="button"
+            onClick={() => restart("ai")}
+          >
             <Bot size={18} />
             人机对战
           </button>
-          <button className={mode === "local" ? "is-active" : ""} type="button" onClick={() => restart("local")}>
+          <button
+            className={mode === "local" ? "is-active" : ""}
+            data-mode="local"
+            type="button"
+            onClick={() => restart("local")}
+          >
             <UsersRound size={18} />
             双人对战
           </button>
@@ -262,6 +308,7 @@ function App() {
           onCardClick={handleCardClick}
           isSelectable={isSelectable}
           attackSource={attackSource}
+          attackTarget={attackTarget}
         />
 
         <MineBand
@@ -276,6 +323,7 @@ function App() {
           onCardClick={handleCardClick}
           isSelectable={isSelectable}
           attackSource={attackSource}
+          attackTarget={attackTarget}
         />
       </section>
 
@@ -290,6 +338,7 @@ function App() {
               <button
                 className={isActive ? "action-button is-active" : "action-button"}
                 disabled={!hasLegalCommand || isAiThinking || state.winner !== null}
+                data-action={type}
                 key={type}
                 type="button"
                 onClick={() => selectAction(type)}
@@ -306,7 +355,9 @@ function App() {
         </div>
 
         <div className="turn-hint">
-          {state.winner ? winnerText(state) : `${currentPlayer.name}：${describePending(pendingAction, attackSource)}`}
+          {state.winner
+            ? winnerText(state)
+            : `${currentPlayer.name}：${describePending(pendingAction, attackSource, attackTarget)}`}
         </div>
 
         <button
@@ -331,16 +382,22 @@ interface PlayerBandProps {
   playerId: PlayerId;
   state: GameState;
   attackSource: string | null;
+  attackTarget: string | null;
   onCardClick: (context: CardClickContext) => void;
   isSelectable: (context: CardClickContext) => boolean;
 }
 
-function PlayerBand({ playerId, state, attackSource, onCardClick, isSelectable }: PlayerBandProps) {
+function PlayerBand({ playerId, state, attackSource, attackTarget, onCardClick, isSelectable }: PlayerBandProps) {
   const player = state.players[playerId];
   const isCurrent = state.currentPlayer === playerId && state.winner === null;
 
   return (
-    <section className={isCurrent ? "player-band is-current" : "player-band"} aria-label={`${player.name} 区域`}>
+    <section
+      className={isCurrent ? "player-band is-current" : "player-band"}
+      data-current={isCurrent ? "true" : "false"}
+      data-player-id={playerId}
+      aria-label={`${player.name} 区域`}
+    >
       <PlayerSummary player={player} isCurrent={isCurrent} />
       <Zone
         title="收纳区"
@@ -362,6 +419,7 @@ function PlayerBand({ playerId, state, attackSource, onCardClick, isSelectable }
         ownerId={playerId}
         onCardClick={onCardClick}
         isSelectable={isSelectable}
+        selectedId={attackTarget}
       />
     </section>
   );
@@ -469,8 +527,10 @@ function Zone({
             <GemCardView
               card={card}
               key={card.instanceId}
+              ownerId={ownerId}
               isSelected={selectedId === card.instanceId}
               isSelectable={isSelectable(context)}
+              zone={zone}
               onClick={() => onCardClick(context)}
             />
           );
@@ -489,11 +549,15 @@ function GemCardView({
   card,
   isSelectable,
   isSelected,
+  ownerId,
+  zone,
   onClick,
 }: {
   card: GemCard;
   isSelectable: boolean;
   isSelected: boolean;
+  ownerId?: PlayerId;
+  zone: ZoneKind;
   onClick: () => void;
 }) {
   const cooling = isCooling(card);
@@ -510,6 +574,12 @@ function GemCardView({
         .filter(Boolean)
         .join(" ")}
       type="button"
+      data-card-id={card.instanceId}
+      data-card-name={card.name}
+      data-hardness={card.hardness}
+      data-owner-id={ownerId ?? ""}
+      data-value={card.value}
+      data-zone={zone}
       onClick={onClick}
     >
       <span className="gem-card__name">{card.name}</span>

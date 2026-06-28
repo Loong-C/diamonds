@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createDeck } from "./cards";
-import { applyCommand, createGame, isCooling } from "./engine";
+import { applyCommand, createGame, getLegalCommands, isCooling } from "./engine";
 import type { GameState } from "./types";
 
 function playUntilCurrentPlayer(state: GameState, player: 0 | 1): GameState {
@@ -59,5 +59,38 @@ describe("宝石寄售规则引擎", () => {
 
     state = applyCommand(state, { type: "endTurn" });
     expect(isCooling(state.players[0].storage[0])).toBe(false);
+  });
+
+  it("removes an attacked target from the counter so it cannot be sold later", () => {
+    let state = createGame({ mode: "local", seed: 6, firstPlayer: 0 });
+    const attacker = { ...createDeck().find((card) => card.name === "钻石")!, instanceId: "attacker" };
+    const target = { ...createDeck().find((card) => card.name === "磷叶石")!, instanceId: "target", listedOnTurn: 0 };
+    state.players[0].storage.push(attacker);
+    state.players[1].counter.push(target);
+
+    state = applyCommand(state, { type: "attack", attackerId: "attacker", targetId: "target" });
+
+    expect(state.discard.map((card) => card.instanceId)).toContain("target");
+    expect(state.players[1].counter.map((card) => card.instanceId)).not.toContain("target");
+
+    const coinsBeforeSaleAttempt = state.players[1].coins;
+    const afterSaleAttempt = applyCommand(state, { type: "sell", cardId: "target" });
+
+    expect(afterSaleAttempt.players[1].coins).toBe(coinsBeforeSaleAttempt);
+    expect(afterSaleAttempt.players[1].sold.map((card) => card.instanceId)).not.toContain("target");
+  });
+
+  it("allows a player to attack a lower-hardness counter gem at the start of their turn", () => {
+    let state = createGame({ mode: "local", seed: 6, firstPlayer: 0 });
+    const attacker = { ...createDeck().find((card) => card.name === "钻石")!, instanceId: "attacker" };
+    const target = { ...createDeck().find((card) => card.name === "磷叶石")!, instanceId: "target", listedOnTurn: 0 };
+    state.players[0].storage.push(attacker);
+    state.players[1].counter.push(target);
+
+    expect(getLegalCommands(state)).toContainEqual({
+      type: "attack",
+      attackerId: "attacker",
+      targetId: "target",
+    });
   });
 });
