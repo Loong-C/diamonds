@@ -2,7 +2,7 @@ import type { GemCard, GemDefinition, GemQuadrant } from "./types";
 
 export const STORAGE_LIMIT = 4;
 export const COUNTER_LIMIT = 3;
-export const WINNING_COINS = 40;
+export const WINNING_COINS = 50;
 export const ACTION_POINTS_PER_TURN = 2;
 
 const quadrantMap: Record<string, GemQuadrant> = {
