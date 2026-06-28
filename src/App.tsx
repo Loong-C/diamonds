@@ -228,7 +228,6 @@ function App() {
           <Gem size={30} strokeWidth={1.7} />
         </div>
         <div>
-          <p className="brand-kicker">公开信息策略</p>
           <h1>宝石寄售</h1>
         </div>
 
