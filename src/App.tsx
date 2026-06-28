@@ -21,6 +21,7 @@ import { applyCommand, createGame, getLegalCommands, isCooling } from "./game/en
 import type { GameCommand, GameMode, GameState, GemCard, PlayerId } from "./game/types";
 
 type PendingAction = "collect" | "consign" | "sell" | "attack" | null;
+type DevEndgameFixture = "win" | "loss" | "draw";
 type ZoneKind = "mine" | "storage" | "counter";
 
 interface CardClickContext {
@@ -53,6 +54,54 @@ const quadrantClass: Record<GemCard["quadrant"], string> = {
 
 function createFreshGame(mode: GameMode): GameState {
   return createGame({ mode, seed: Date.now() });
+}
+
+function createInitialGame(mode: GameMode): GameState {
+  const fixture = getDevEndgameFixture();
+  return fixture ? createEndgameFixture(mode, fixture) : createFreshGame(mode);
+}
+
+function getDevEndgameFixture(): DevEndgameFixture | null {
+  if (!import.meta.env.DEV || typeof window === "undefined") {
+    return null;
+  }
+
+  const fixture = new URLSearchParams(window.location.search).get("endgame");
+  return fixture === "win" || fixture === "loss" || fixture === "draw" ? fixture : null;
+}
+
+function createEndgameFixture(mode: GameMode, fixture: DevEndgameFixture): GameState {
+  const baseState = createGame({ mode, seed: 832491, firstPlayer: 0 });
+  const winner: GameState["winner"] = fixture === "draw" ? "draw" : fixture === "loss" ? 1 : 0;
+  const coinTotals: Record<PlayerId, number> =
+    fixture === "loss" ? { 0: 28, 1: WINNING_COINS } : fixture === "draw" ? { 0: 32, 1: 32 } : { 0: WINNING_COINS, 1: 24 };
+  const soldCounts: Record<PlayerId, number> =
+    fixture === "loss" ? { 0: 3, 1: 5 } : fixture === "draw" ? { 0: 4, 1: 4 } : { 0: 5, 1: 3 };
+  const playerZeroSold = baseState.deck.slice(0, soldCounts[0]);
+  const playerOneSold = baseState.deck.slice(soldCounts[0], soldCounts[0] + soldCounts[1]);
+
+  return {
+    ...baseState,
+    actionPoints: 0,
+    actionsTaken: 2,
+    currentPlayer: winner === 1 ? 1 : 0,
+    deck: baseState.deck.slice(soldCounts[0] + soldCounts[1]),
+    log: [
+      fixture === "loss"
+        ? `${baseState.players[1].name} 率先达到 ${WINNING_COINS} 金币。`
+        : fixture === "draw"
+          ? "牌堆耗尽，双方金币持平。"
+          : `${baseState.players[0].name} 率先达到 ${WINNING_COINS} 金币。`,
+      `${baseState.players[0].name} 完成一次高价值售出。`,
+      `${baseState.players[1].name} 调整了柜台陈列。`,
+    ],
+    players: [
+      { ...baseState.players[0], coins: coinTotals[0], sold: playerZeroSold },
+      { ...baseState.players[1], coins: coinTotals[1], sold: playerOneSold },
+    ],
+    turn: 9,
+    winner,
+  };
 }
 
 function commandMatchesType(command: GameCommand, type: GameCommand["type"]): boolean {
@@ -115,6 +164,54 @@ function winnerText(state: GameState): string {
   return `${state.players[state.winner].name} 获胜`;
 }
 
+function endgameTitle(state: GameState): string {
+  if (state.winner === "draw") {
+    return "平局";
+  }
+
+  if (state.winner === null) {
+    return "";
+  }
+
+  if (state.mode === "ai") {
+    return state.winner === 0 ? "胜利" : "失败";
+  }
+
+  return `${state.players[state.winner].name} 获胜`;
+}
+
+function endgameCopy(state: GameState): string {
+  if (state.winner === "draw") {
+    return `双方都停在 ${state.players[0].coins} 金币，矿灯熄灭时仍难分高下。`;
+  }
+
+  if (state.winner === null) {
+    return "";
+  }
+
+  const winner = state.players[state.winner];
+
+  if (state.mode === "ai") {
+    return state.winner === 0
+      ? `你以 ${winner.coins} 金币完成了更漂亮的寄售。`
+      : `${winner.name} 以 ${winner.coins} 金币先完成结算。`;
+  }
+
+  return `${winner.name} 以 ${winner.coins} 金币完成结算。`;
+}
+
+function endgameTone(state: GameState): string {
+  if (state.winner === "draw") {
+    return "is-draw";
+  }
+
+  if (state.mode === "ai" && state.winner === 1) {
+    return "is-loss";
+  }
+
+  return "is-win";
+}
+
 function getAttackFeedback(command: GameCommand, sourceState: GameState): AttackFeedback | null {
   if (command.type !== "attack") {
     return null;
@@ -150,7 +247,7 @@ function getSafeAiCommand(sourceState: GameState): GameCommand | null {
 
 function App() {
   const [mode, setMode] = useState<GameMode>("ai");
-  const [state, setState] = useState<GameState>(() => createFreshGame("ai"));
+  const [state, setState] = useState<GameState>(() => createInitialGame("ai"));
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [attackSource, setAttackSource] = useState<string | null>(null);
   const [attackTarget, setAttackTarget] = useState<string | null>(null);
@@ -611,7 +708,7 @@ function App() {
         {attackFeedback && <AttackFeedbackBanner feedback={attackFeedback} key={attackFeedback.id} />}
 
         <div className="turn-hint">
-          {state.winner
+          {state.winner !== null
             ? winnerText(state)
             : `${currentPlayer.name}：${actionNotice ?? describePending(pendingAction, attackSource, attackTarget)}`}
         </div>
@@ -630,6 +727,8 @@ function App() {
           重新开局
         </button>
       </aside>
+
+      {state.winner !== null && <EndGameOverlay state={state} onRestart={() => restart()} />}
     </main>
   );
 }
@@ -763,6 +862,67 @@ function AttackFeedbackBanner({ feedback }: { feedback: AttackFeedback }) {
   );
 }
 
+function EndGameOverlay({ state, onRestart }: { state: GameState; onRestart: () => void }) {
+  const winnerId = typeof state.winner === "number" ? state.winner : null;
+  const recentLogs = state.log.slice(0, 3);
+
+  return (
+    <section
+      aria-describedby="endgame-copy"
+      aria-labelledby="endgame-title"
+      aria-modal="true"
+      className={["endgame-overlay", endgameTone(state)].join(" ")}
+      role="dialog"
+    >
+      <div className="endgame-panel">
+        <div className="endgame-mark" aria-hidden="true">
+          <Gem size={28} strokeWidth={1.6} />
+        </div>
+        <p className="endgame-kicker">最终结算</p>
+        <h2 id="endgame-title">{endgameTitle(state)}</h2>
+        <p className="endgame-copy" id="endgame-copy">
+          {endgameCopy(state)}
+        </p>
+
+        <div className="endgame-scoreboard" aria-label="最终比分">
+          {state.players.map((player) => (
+            <div
+              className={player.id === winnerId ? "endgame-score-row is-winner" : "endgame-score-row"}
+              key={player.id}
+            >
+              <strong>{player.name}</strong>
+              <span className="endgame-stat">
+                <CircleDollarSign size={15} />
+                {player.coins}
+              </span>
+              <span className="endgame-stat">
+                <Archive size={15} />
+                {player.sold.length}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {recentLogs.length > 0 && (
+          <div className="endgame-log">
+            <span>最近结算</span>
+            <ol>
+              {recentLogs.map((entry, index) => (
+                <li key={`${entry}-${index}`}>{entry}</li>
+              ))}
+            </ol>
+          </div>
+        )}
+
+        <button autoFocus className="endgame-primary" type="button" onClick={onRestart}>
+          <RefreshCw size={20} />
+          再来一局
+        </button>
+      </div>
+    </section>
+  );
+}
+
 interface ZoneProps {
   title: string;
   subtitle: string;
@@ -890,7 +1050,7 @@ function StatusPanel({ state, isAiThinking }: { state: GameState; isAiThinking: 
     <section className="status-panel" aria-label="回合状态">
       <div className="round-line">
         <span>回合 {state.turn}</span>
-        <strong>{state.winner ? winner : `${current.name} 行动中`}</strong>
+        <strong>{state.winner !== null ? winner : `${current.name} 行动中`}</strong>
       </div>
       <div className="ap-row" aria-label={`行动点 ${state.actionPoints}`}>
         <span>行动点</span>
