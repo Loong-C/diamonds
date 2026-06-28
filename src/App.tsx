@@ -28,12 +28,19 @@ interface CardClickContext {
   card: GemCard;
 }
 
+interface AttackFeedback {
+  id: string;
+  attackerName: string;
+  defenderName: string;
+  targetName: string;
+}
+
 const actionConfig = [
   { type: "mine", label: "开采", icon: Hammer, hint: "从牌堆翻开 2 张宝石" },
   { type: "collect", label: "收纳", icon: PackageOpen, hint: "选择公共矿区 1 张宝石" },
   { type: "consign", label: "寄售", icon: Tags, hint: "选择收纳区非冷却宝石" },
   { type: "sell", label: "卖出", icon: CircleDollarSign, hint: "选择柜台区可售宝石" },
-  { type: "attack", label: "攻击", icon: Swords, hint: "先选攻击宝石，再选目标" },
+  { type: "attack", label: "攻击", icon: Swords, hint: "选攻击宝石或目标" },
 ] as const;
 
 const quadrantClass: Record<GemCard["quadrant"], string> = {
@@ -49,6 +56,10 @@ function createFreshGame(mode: GameMode): GameState {
 
 function commandMatchesType(command: GameCommand, type: GameCommand["type"]): boolean {
   return command.type === type;
+}
+
+function getActionLabel(type: GameCommand["type"]): string {
+  return actionConfig.find((action) => action.type === type)?.label ?? "行动";
 }
 
 function commandKey(command: GameCommand): string {
@@ -78,14 +89,14 @@ function describePending(pendingAction: PendingAction, attackSource: string | nu
 
   if (pendingAction === "attack") {
     if (attackSource) {
-      return "再点选对方柜台区中硬度更低的目标。";
+      return "再选可击碎目标。";
     }
 
     if (attackTarget) {
-      return "再点选当前玩家收纳区中硬度更高的攻击宝石。";
+      return "再选硬度更高的宝石。";
     }
 
-    return "点选己方攻击宝石或对方柜台目标，任一顺序都可以。";
+    return "选攻击宝石或目标，顺序不限。";
   }
 
   return "选择右侧行动，或直接结束回合。";
@@ -103,12 +114,36 @@ function winnerText(state: GameState): string {
   return `${state.players[state.winner].name} 获胜`;
 }
 
+function getAttackFeedback(command: GameCommand, sourceState: GameState): AttackFeedback | null {
+  if (command.type !== "attack") {
+    return null;
+  }
+
+  const player = sourceState.players[sourceState.currentPlayer];
+  const opponent = sourceState.players[opponentOf(sourceState.currentPlayer)];
+  const attacker = player.storage.find((card) => card.instanceId === command.attackerId);
+  const target = opponent.counter.find((card) => card.instanceId === command.targetId);
+
+  if (!attacker || !target) {
+    return null;
+  }
+
+  return {
+    id: `${sourceState.turn}-${sourceState.currentPlayer}-${command.attackerId}-${command.targetId}-${sourceState.log.length}`,
+    attackerName: attacker.name,
+    defenderName: opponent.name,
+    targetName: target.name,
+  };
+}
+
 function App() {
   const [mode, setMode] = useState<GameMode>("ai");
   const [state, setState] = useState<GameState>(() => createFreshGame("ai"));
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [attackSource, setAttackSource] = useState<string | null>(null);
   const [attackTarget, setAttackTarget] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [attackFeedback, setAttackFeedback] = useState<AttackFeedback | null>(null);
 
   const legalCommands = useMemo(() => getLegalCommands(state), [state]);
   const isAiThinking = state.mode === "ai" && state.currentPlayer === 1 && state.winner === null;
@@ -118,6 +153,7 @@ function App() {
     setPendingAction(null);
     setAttackSource(null);
     setAttackTarget(null);
+    setActionNotice(null);
   }, [state.currentPlayer, state.turn]);
 
   useEffect(() => {
@@ -126,20 +162,37 @@ function App() {
     }
 
     const timer = window.setTimeout(() => {
-      setState((current) => applyCommand(current, chooseAiCommand(current)));
+      const command = chooseAiCommand(state);
+      const feedback = getAttackFeedback(command, state);
+      if (feedback) {
+        setAttackFeedback(feedback);
+      }
+      setState((current) => applyCommand(current, command));
     }, 650);
 
     return () => window.clearTimeout(timer);
   }, [isAiThinking, state]);
 
   useEffect(() => {
+    if (!attackFeedback) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setAttackFeedback(null), 2400);
+    return () => window.clearTimeout(timer);
+  }, [attackFeedback]);
+
+  useEffect(() => {
     if (pendingAction !== "attack" || !attackSource || !attackTarget || isAiThinking || state.winner !== null) {
       return;
     }
 
-    setState((current) =>
-      applyCommand(current, { type: "attack", attackerId: attackSource, targetId: attackTarget }),
-    );
+    const command: GameCommand = { type: "attack", attackerId: attackSource, targetId: attackTarget };
+    const feedback = getAttackFeedback(command, state);
+    if (feedback) {
+      setAttackFeedback(feedback);
+    }
+    setState((current) => applyCommand(current, command));
   }, [attackSource, attackTarget, isAiThinking, pendingAction, state.winner]);
 
   function restart(nextMode = mode) {
@@ -147,19 +200,36 @@ function App() {
     setPendingAction(null);
     setAttackSource(null);
     setAttackTarget(null);
+    setActionNotice(null);
+    setAttackFeedback(null);
     setState(createFreshGame(nextMode));
   }
 
   function runCommand(command: GameCommand) {
-    if (isAiThinking || state.winner !== null || !isLegalCommand(legalCommands, command)) {
+    if (isAiThinking || state.winner !== null) {
       return;
     }
 
+    if (!isLegalCommand(legalCommands, command)) {
+      setActionNotice(describeIllegalCommand(command));
+      return;
+    }
+
+    setActionNotice(null);
+    const feedback = getAttackFeedback(command, state);
+    if (feedback) {
+      setAttackFeedback(feedback);
+    }
     setState((current) => applyCommand(current, command));
   }
 
   function selectAction(type: (typeof actionConfig)[number]["type"]) {
     if (isAiThinking || state.winner !== null) {
+      return;
+    }
+
+    if (!legalCommands.some((command) => commandMatchesType(command, type))) {
+      setActionNotice(describeUnavailableAction(type));
       return;
     }
 
@@ -170,6 +240,7 @@ function App() {
 
     setAttackSource(null);
     setAttackTarget(null);
+    setActionNotice(null);
     setPendingAction((current) => (current === type ? null : type));
   }
 
@@ -179,14 +250,17 @@ function App() {
     }
 
     if (pendingAction === "collect" && zone === "mine") {
+      setActionNotice(null);
       runCommand({ type: "collect", cardId: card.instanceId });
     }
 
     if (pendingAction === "consign" && zone === "storage" && ownerId === state.currentPlayer) {
+      setActionNotice(null);
       runCommand({ type: "consign", cardId: card.instanceId });
     }
 
     if (pendingAction === "sell" && zone === "counter" && ownerId === state.currentPlayer) {
+      setActionNotice(null);
       runCommand({ type: "sell", cardId: card.instanceId });
     }
 
@@ -201,7 +275,10 @@ function App() {
       }
 
       if (hasLegalAttack({ attackerId: card.instanceId })) {
+        setActionNotice(null);
         setAttackSource(card.instanceId);
+      } else {
+        setActionNotice("这张宝石不能作为当前攻击宝石。攻击宝石必须在己方收纳区、未冷却，并且硬度高于目标。");
       }
       return;
     }
@@ -213,7 +290,10 @@ function App() {
       }
 
       if (hasLegalAttack({ targetId: card.instanceId })) {
+        setActionNotice(null);
         setAttackTarget(card.instanceId);
+      } else {
+        setActionNotice("这个目标当前不能被攻击。攻击宝石硬度必须严格高于目标宝石。");
       }
     }
   }
@@ -251,6 +331,45 @@ function App() {
     }
 
     return false;
+  }
+
+  function describeIllegalCommand(command: GameCommand): string {
+    if (command.type === "attack") {
+      return "这组攻击不合法：攻击宝石必须在己方收纳区、未冷却，且硬度严格高于对方柜台目标。";
+    }
+
+    return `${getActionLabel(command.type)}现在不能执行。`;
+  }
+
+  function describeUnavailableAction(type: (typeof actionConfig)[number]["type"]): string {
+    if (type !== "attack") {
+      return `${getActionLabel(type)}现在不可用。`;
+    }
+
+    if (state.actionsTaken > 0) {
+      return "攻击只能作为本回合第一件事。你本回合已经执行过行动，请结束回合后再攻击。";
+    }
+
+    const player = state.players[state.currentPlayer];
+    const opponent = state.players[opponentOf(state.currentPlayer)];
+    const readyStorage = player.storage.filter((card) => !isCooling(card));
+
+    if (player.storage.length === 0) {
+      return "不能攻击：己方收纳区没有宝石。攻击宝石必须先在收纳区。";
+    }
+
+    if (readyStorage.length === 0) {
+      return "不能攻击：己方收纳区的宝石都在冷却。";
+    }
+
+    if (opponent.counter.length === 0) {
+      return "不能攻击：对方柜台区没有目标。只能攻击对方柜台上的宝石。";
+    }
+
+    const highestHardness = Math.max(...readyStorage.map((card) => card.hardness));
+    const targetHardness = Math.min(...opponent.counter.map((card) => card.hardness));
+
+    return `不能攻击：己方可用宝石最高硬度 ${highestHardness}，对方柜台最低硬度 ${targetHardness}。攻击必须硬度严格更高。`;
   }
 
   const backgroundStyle = {
@@ -313,6 +432,7 @@ function App() {
 
         <MineBand
           state={state}
+          attackFeedback={attackFeedback}
           onCardClick={handleCardClick}
           isSelectable={isSelectable}
         />
@@ -334,15 +454,23 @@ function App() {
           {actionConfig.map(({ type, label, icon: Icon, hint }) => {
             const hasLegalCommand = legalCommands.some((command) => commandMatchesType(command, type));
             const isActive = pendingAction === type;
+            const unavailableReason = hasLegalCommand ? null : describeUnavailableAction(type);
             return (
               <button
-                className={isActive ? "action-button is-active" : "action-button"}
-                disabled={!hasLegalCommand || isAiThinking || state.winner !== null}
+                aria-disabled={!hasLegalCommand}
+                className={[
+                  "action-button",
+                  isActive ? "is-active" : "",
+                  !hasLegalCommand ? "is-unavailable" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                disabled={isAiThinking || state.winner !== null}
                 data-action={type}
                 key={type}
                 type="button"
                 onClick={() => selectAction(type)}
-                title={hint}
+                title={unavailableReason ?? hint}
               >
                 <Icon size={21} />
                 <span>
@@ -354,10 +482,12 @@ function App() {
           })}
         </div>
 
+        {attackFeedback && <AttackFeedbackBanner feedback={attackFeedback} key={attackFeedback.id} />}
+
         <div className="turn-hint">
           {state.winner
             ? winnerText(state)
-            : `${currentPlayer.name}：${describePending(pendingAction, attackSource, attackTarget)}`}
+            : `${currentPlayer.name}：${actionNotice ?? describePending(pendingAction, attackSource, attackTarget)}`}
         </div>
 
         <button
@@ -451,11 +581,12 @@ function PlayerSummary({ player, isCurrent }: { player: GameState["players"][num
 
 interface MineBandProps {
   state: GameState;
+  attackFeedback: AttackFeedback | null;
   onCardClick: (context: CardClickContext) => void;
   isSelectable: (context: CardClickContext) => boolean;
 }
 
-function MineBand({ state, onCardClick, isSelectable }: MineBandProps) {
+function MineBand({ state, attackFeedback, onCardClick, isSelectable }: MineBandProps) {
   return (
     <section className="mine-band" aria-label="公共矿区">
       <div className="pile-column">
@@ -479,13 +610,30 @@ function MineBand({ state, onCardClick, isSelectable }: MineBandProps) {
       />
 
       <div className="pile-column">
-        <div className="discard-stack" aria-label={`弃置区 ${state.discard.length} 张`}>
+        <div
+          className={attackFeedback ? "discard-stack is-hit" : "discard-stack"}
+          aria-label={`弃置区 ${state.discard.length} 张`}
+        >
           <Swords size={26} />
           <span>{state.discard.length}</span>
         </div>
         <p>弃置堆</p>
       </div>
     </section>
+  );
+}
+
+function AttackFeedbackBanner({ feedback }: { feedback: AttackFeedback }) {
+  return (
+    <div className="attack-feedback" role="status" aria-live="polite">
+      <Swords size={18} />
+      <span>
+        <strong>{feedback.targetName} 已进弃置堆</strong>
+        <small>
+          {feedback.attackerName} 击碎了 {feedback.defenderName} 的柜台目标
+        </small>
+      </span>
+    </div>
   );
 }
 
