@@ -1,5 +1,6 @@
 import { WINNING_COINS } from "./cards";
 import { getCurrentPlayer, getLegalCommands, isCooling } from "./engine";
+import { chooseSearchAiCommand } from "./searchAi";
 import type { GameCommand, GameState } from "./types";
 
 function otherPlayer(player: 0 | 1): 0 | 1 {
@@ -18,7 +19,7 @@ function pickLegal(state: GameState, command: GameCommand): GameCommand | null {
   return legalSet(state).has(commandKey(command)) ? command : null;
 }
 
-export function chooseAiCommand(state: GameState): GameCommand {
+export function chooseHeuristicAiCommand(state: GameState): GameCommand {
   const player = getCurrentPlayer(state);
   const opponent = state.players[otherPlayer(state.currentPlayer)];
 
@@ -87,4 +88,15 @@ export function chooseAiCommand(state: GameState): GameCommand {
   }
 
   return { type: "endTurn" };
+}
+
+export function chooseAiCommand(state: GameState): GameCommand {
+  const searchCommand = chooseSearchAiCommand(state);
+  const legalCommands = legalSet(state);
+
+  if (legalCommands.has(commandKey(searchCommand))) {
+    return searchCommand;
+  }
+
+  return chooseHeuristicAiCommand(state);
 }

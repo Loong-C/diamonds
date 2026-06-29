@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { chooseAiCommand } from "./ai";
 import { createDeck } from "./cards";
 import { applyCommand, createGame, getLegalCommands, isCooling } from "./engine";
+import { chooseSearchAiCommand } from "./searchAi";
 import type { GameState } from "./types";
 
 function playUntilCurrentPlayer(state: GameState, player: 0 | 1): GameState {
@@ -154,5 +155,39 @@ describe("宝石寄售规则引擎", () => {
 
     state = applyCommand(state, { type: "endTurn" });
     expect(state.currentPlayer).toBe(1);
+  });
+
+  it("keeps the search AI from depending on the hidden deck order", () => {
+    const state = createGame({ mode: "ai", seed: 21, firstPlayer: 1 });
+    const reversedDeckState = {
+      ...state,
+      deck: [...state.deck].reverse(),
+    };
+
+    expect(chooseSearchAiCommand(state, { maxDepth: 3, samples: 3, timeBudgetMs: 1_000 })).toEqual(
+      chooseSearchAiCommand(reversedDeckState, { maxDepth: 3, samples: 3, timeBudgetMs: 1_000 }),
+    );
+  });
+
+  it("uses search to take an immediate winning sale", () => {
+    let state = createGame({ mode: "ai", seed: 6, firstPlayer: 1 });
+    const winningCard = {
+      ...createDeck().find((card) => card.value >= 11)!,
+      instanceId: "winning-sale",
+      listedOnTurn: 0,
+    };
+    state = {
+      ...state,
+      players: [
+        state.players[0],
+        {
+          ...state.players[1],
+          coins: 40,
+          counter: [winningCard],
+        },
+      ],
+    };
+
+    expect(chooseAiCommand(state)).toEqual({ type: "sell", cardId: "winning-sale" });
   });
 });
