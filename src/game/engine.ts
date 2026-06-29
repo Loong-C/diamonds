@@ -6,7 +6,7 @@ import {
   createDeck,
 } from "./cards";
 import { normalizeSeed, shuffle } from "./random";
-import type { GameCommand, GameState, NewGameOptions, PlayerId, PlayerState, Winner } from "./types";
+import type { GameCommand, GameState, GemCard, NewGameOptions, PlayerId, PlayerState, Winner } from "./types";
 
 function otherPlayer(player: PlayerId): PlayerId {
   return player === 0 ? 1 : 0;
@@ -28,18 +28,22 @@ function appendLog(state: GameState, entry: string): string[] {
   return [entry, ...state.log].slice(0, 12);
 }
 
+function cloneCard(card: GemCard): GemCard {
+  return { ...card };
+}
+
 function cloneState(state: GameState): GameState {
   return {
     ...state,
     players: state.players.map((player) => ({
       ...player,
-      storage: [...player.storage],
-      counter: [...player.counter],
-      sold: [...player.sold],
+      storage: player.storage.map(cloneCard),
+      counter: player.counter.map(cloneCard),
+      sold: player.sold.map(cloneCard),
     })) as [PlayerState, PlayerState],
-    deck: [...state.deck],
-    mine: [...state.mine],
-    discard: [...state.discard],
+    deck: state.deck.map(cloneCard),
+    mine: state.mine.map(cloneCard),
+    discard: state.discard.map(cloneCard),
     log: [...state.log],
   };
 }

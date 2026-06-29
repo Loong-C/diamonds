@@ -81,6 +81,44 @@ describe("宝石寄售规则引擎", () => {
     expect(afterSaleAttempt.players[1].sold.map((card) => card.instanceId)).not.toContain("target");
   });
 
+  it("does not leak attack cooldown back into the source state snapshot", () => {
+    const state = createGame({ mode: "local", seed: 6, firstPlayer: 0 });
+    const attacker = { ...createDeck().find((card) => card.name === "钻石")!, instanceId: "attacker" };
+    const target = { ...createDeck().find((card) => card.name === "磷叶石")!, instanceId: "target", listedOnTurn: 0 };
+    state.players[0].storage.push(attacker);
+    state.players[1].counter.push(target);
+
+    const nextState = applyCommand(state, { type: "attack", attackerId: "attacker", targetId: "target" });
+
+    expect(isCooling(nextState.players[0].storage[0])).toBe(true);
+    expect(isCooling(state.players[0].storage[0])).toBe(false);
+    expect(state.players[1].counter.map((card) => card.instanceId)).toContain("target");
+    expect(state.discard).toHaveLength(0);
+  });
+
+  it("clears AI attack cooldown after the AI completes its next normal turn", () => {
+    let state = createGame({ mode: "ai", seed: 6, firstPlayer: 1 });
+    const attacker = { ...createDeck().find((card) => card.name === "钻石")!, instanceId: "ai-attacker" };
+    const target = { ...createDeck().find((card) => card.name === "磷叶石")!, instanceId: "human-target", listedOnTurn: 0 };
+    state.players[1].storage.push(attacker);
+    state.players[0].counter.push(target);
+
+    state = applyCommand(state, { type: "attack", attackerId: "ai-attacker", targetId: "human-target" });
+    expect(state.currentPlayer).toBe(0);
+    expect(isCooling(state.players[1].storage[0])).toBe(true);
+
+    state = applyCommand(state, { type: "endTurn" });
+    expect(state.currentPlayer).toBe(1);
+    expect(isCooling(state.players[1].storage[0])).toBe(true);
+
+    state = applyCommand(state, { type: "mine" });
+    state = applyCommand(state, { type: "mine" });
+    state = applyCommand(state, { type: "endTurn" });
+
+    expect(state.currentPlayer).toBe(0);
+    expect(isCooling(state.players[1].storage[0])).toBe(false);
+  });
+
   it("allows a player to attack a lower-hardness counter gem at the start of their turn", () => {
     let state = createGame({ mode: "local", seed: 6, firstPlayer: 0 });
     const attacker = { ...createDeck().find((card) => card.name === "钻石")!, instanceId: "attacker" };
