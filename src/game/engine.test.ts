@@ -190,4 +190,57 @@ describe("宝石寄售规则引擎", () => {
 
     expect(chooseAiCommand(state)).toEqual({ type: "sell", cardId: "winning-sale" });
   });
+
+  it("uses search to block an opponent's immediate winning sale", () => {
+    let state = createGame({ mode: "ai", seed: 6, firstPlayer: 1 });
+    const attacker = { ...createDeck().find((card) => card.id === "diamond")!, instanceId: "ai-blocker" };
+    const target = {
+      ...createDeck().find((card) => card.id === "phosphophyllite")!,
+      instanceId: "human-winning-target",
+      listedOnTurn: 0,
+    };
+
+    state = {
+      ...state,
+      players: [
+        {
+          ...state.players[0],
+          coins: 40,
+          counter: [target],
+        },
+        {
+          ...state.players[1],
+          storage: [attacker],
+        },
+      ],
+    };
+
+    expect(chooseAiCommand(state)).toEqual({
+      type: "attack",
+      attackerId: "ai-blocker",
+      targetId: "human-winning-target",
+    });
+  });
+
+  it("uses search to collect a strong public gem before mining again", () => {
+    let state = createGame({ mode: "ai", seed: 13, firstPlayer: 1 });
+    const strongPublicGem = {
+      ...createDeck().find((card) => card.id === "diamond")!,
+      instanceId: "public-diamond",
+    };
+    const weakPublicGem = {
+      ...createDeck().find((card) => card.id === "obsidian")!,
+      instanceId: "public-obsidian",
+    };
+
+    state = {
+      ...state,
+      mine: [weakPublicGem, strongPublicGem],
+    };
+
+    expect(chooseSearchAiCommand(state, { maxDepth: 4, samples: 4, timeBudgetMs: 1_000 })).toEqual({
+      type: "collect",
+      cardId: "public-diamond",
+    });
+  });
 });

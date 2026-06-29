@@ -1,4 +1,4 @@
-import { WINNING_COINS } from "./cards";
+import { COUNTER_LIMIT, STORAGE_LIMIT, WINNING_COINS } from "./cards";
 import { applyCommand, getLegalCommands, isCommandLegal, isCooling } from "./engine";
 import { shuffle } from "./random";
 import type { GameCommand, GameState, GemCard, PlayerId, PlayerState } from "./types";
@@ -17,9 +17,9 @@ interface SearchCandidate {
   seedScore: number;
 }
 
-const DEFAULT_MAX_DEPTH = 5;
-const DEFAULT_SAMPLES = 5;
-const DEFAULT_TIME_BUDGET_MS = 160;
+const DEFAULT_MAX_DEPTH = 6;
+const DEFAULT_SAMPLES = 6;
+const DEFAULT_TIME_BUDGET_MS = 320;
 const WIN_SCORE = 1_000_000;
 
 function otherPlayer(player: PlayerId): PlayerId {
@@ -119,8 +119,19 @@ function bestAttackSwing(attacker: PlayerState, defender: PlayerState): number {
   return best;
 }
 
+function availableStorage(player: PlayerState): number {
+  return Math.max(0, STORAGE_LIMIT - player.storage.length);
+}
+
+function availableCounter(player: PlayerState): number {
+  return Math.max(0, COUNTER_LIMIT - player.counter.length);
+}
+
 function playerPositionScore(player: PlayerState, opponent: PlayerState, turn: number): number {
   const coolingPenalty = player.storage.filter(isCooling).length * 8;
+  const readyStorage = player.storage.filter((card) => !isCooling(card));
+  const storageJamPenalty = availableStorage(player) === 0 ? 35 : 0;
+  const counterJamPenalty = availableCounter(player) === 0 ? sumCards(readyStorage, 2.5, 0.8) : 0;
   const salePressure = player.counter.some(
     (card) => card.listedOnTurn !== turn && player.coins + card.value >= WINNING_COINS,
   )
@@ -131,11 +142,35 @@ function playerPositionScore(player: PlayerState, opponent: PlayerState, turn: n
     player.coins * 120 +
     sumCards(player.storage, 6, 2.5) +
     sumCards(player.counter, 10, 1.5) +
+    availableStorage(player) * 6 +
+    availableCounter(player) * 4 +
     sellableValue(player, turn) * 18 +
     bestAttackSwing(player, opponent) * 1.5 +
     salePressure -
-    coolingPenalty
+    coolingPenalty -
+    storageJamPenalty -
+    counterJamPenalty
   );
+}
+
+function mineOpportunityScore(state: GameState, perspective: PlayerId): number {
+  if (state.actionPoints <= 0 || state.mine.length === 0) {
+    return 0;
+  }
+
+  const current = state.players[state.currentPlayer];
+  const collectCount = Math.min(state.actionPoints, availableStorage(current), state.mine.length);
+
+  if (collectCount <= 0) {
+    return 0;
+  }
+
+  const opportunity = [...state.mine]
+    .sort((a, b) => b.value * 4 + b.hardness - (a.value * 4 + a.hardness))
+    .slice(0, collectCount)
+    .reduce((total, card) => total + card.value * 16 + card.hardness * 3, 0);
+
+  return state.currentPlayer === perspective ? opportunity : -opportunity;
 }
 
 function evaluateState(state: GameState, perspective: PlayerId): number {
@@ -153,13 +188,12 @@ function evaluateState(state: GameState, perspective: PlayerId): number {
 
   const player = state.players[perspective];
   const opponent = state.players[otherPlayer(perspective)];
-  const mineValue = sumCards(state.mine, 2.5, 0.8);
 
   return (
     playerPositionScore(player, opponent, state.turn) -
     playerPositionScore(opponent, player, state.turn) +
     (state.currentPlayer === perspective ? state.actionPoints * 5 : -state.actionPoints * 5) +
-    mineValue * (state.currentPlayer === perspective ? 0.5 : -0.5)
+    mineOpportunityScore(state, perspective)
   );
 }
 
@@ -195,6 +229,41 @@ function orderCommands(state: GameState, commands: GameCommand[], perspective: P
     const scoreB = scoreCommand(state, b, perspective);
     return maximizing ? scoreB - scoreA : scoreA - scoreB;
   });
+}
+
+function getImmediateTacticalCommand(state: GameState): GameCommand | null {
+  const player = state.players[state.currentPlayer];
+  const opponent = state.players[otherPlayer(state.currentPlayer)];
+  const legalCommands = getLegalCommands(state);
+
+  const winningSale = player.counter
+    .filter((card) => card.listedOnTurn !== state.turn && player.coins + card.value >= WINNING_COINS)
+    .sort((a, b) => b.value - a.value)[0];
+
+  if (winningSale) {
+    return { type: "sell", cardId: winningSale.instanceId };
+  }
+
+  const opponentWinningTargets = opponent.counter
+    .filter((card) => card.listedOnTurn !== state.turn && opponent.coins + card.value >= WINNING_COINS)
+    .sort((a, b) => b.value - a.value);
+
+  for (const target of opponentWinningTargets) {
+    const block = legalCommands
+      .filter((command): command is Extract<GameCommand, { type: "attack" }> => command.type === "attack")
+      .filter((command) => command.targetId === target.instanceId)
+      .sort((a, b) => {
+        const attackerA = player.storage.find((card) => card.instanceId === a.attackerId);
+        const attackerB = player.storage.find((card) => card.instanceId === b.attackerId);
+        return (attackerA?.value ?? 0) - (attackerB?.value ?? 0);
+      })[0];
+
+    if (block) {
+      return block;
+    }
+  }
+
+  return null;
 }
 
 function minimax(
@@ -253,6 +322,11 @@ export function chooseSearchAiCommand(state: GameState, options: SearchOptions =
     return { type: "endTurn" };
   }
 
+  const tacticalCommand = getImmediateTacticalCommand(state);
+  if (tacticalCommand) {
+    return tacticalCommand;
+  }
+
   const perspective = state.currentPlayer;
   const now = options.now ?? defaultNow;
   const deadline = now() + (options.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS);
@@ -267,10 +341,10 @@ export function chooseSearchAiCommand(state: GameState, options: SearchOptions =
 
   const candidateByKey = new Map(candidates.map((candidate) => [commandKey(candidate.command), candidate]));
 
-  search: for (let sampleIndex = 0; sampleIndex < samples; sampleIndex += 1) {
-    const sampledState = createHiddenDeckSample(state, sampleIndex);
+  search: for (let depth = 1; depth <= maxDepth; depth += 1) {
+    for (let sampleIndex = 0; sampleIndex < samples; sampleIndex += 1) {
+      const sampledState = createHiddenDeckSample(state, sampleIndex);
 
-    for (let depth = 1; depth <= maxDepth; depth += 1) {
       for (const command of candidates.map((candidate) => candidate.command)) {
         if (now() >= deadline) {
           break search;
