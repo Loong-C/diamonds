@@ -1,4 +1,5 @@
 import { WINNING_COINS } from "./cards";
+import { chooseAlphaZeroMctsCommand, isAlphaZeroModelTrained } from "./alphaZeroMcts";
 import { getCurrentPlayer, getLegalCommands, isCooling } from "./engine";
 import { chooseSearchAiCommand } from "./searchAi";
 import type { GameCommand, GameState } from "./types";
@@ -91,6 +92,15 @@ export function chooseHeuristicAiCommand(state: GameState): GameCommand {
 }
 
 export function chooseAiCommand(state: GameState): GameCommand {
+  if (isAlphaZeroModelTrained()) {
+    const alphaZeroCommand = chooseAlphaZeroMctsCommand(state);
+    const legalCommands = legalSet(state);
+
+    if (alphaZeroCommand && legalCommands.has(commandKey(alphaZeroCommand))) {
+      return alphaZeroCommand;
+    }
+  }
+
   const searchCommand = chooseSearchAiCommand(state);
   const legalCommands = legalSet(state);
 

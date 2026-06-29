@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { chooseAlphaZeroMctsCommand } from "./alphaZeroMcts";
 import { chooseAiCommand } from "./ai";
 import { createDeck } from "./cards";
 import { applyCommand, createGame, getLegalCommands, isCooling } from "./engine";
+import { ACTION_FEATURE_SIZE, STATE_FEATURE_SIZE, encodeActionInput, encodeStateInput } from "./neuralFeatures";
 import { chooseSearchAiCommand } from "./searchAi";
 import type { GameState } from "./types";
 
@@ -242,5 +244,26 @@ describe("宝石寄售规则引擎", () => {
       type: "collect",
       cardId: "public-diamond",
     });
+  });
+
+  it("keeps AlphaZero feature vectors at their declared sizes", () => {
+    const state = createGame({ mode: "ai", seed: 42, firstPlayer: 1 });
+    const command = getLegalCommands(state)[0];
+
+    expect(encodeStateInput(state)).toHaveLength(STATE_FEATURE_SIZE);
+    expect(encodeActionInput(state, command)).toHaveLength(ACTION_FEATURE_SIZE);
+  });
+
+  it("returns a legal command from AlphaZero MCTS even before long training", () => {
+    const state = createGame({ mode: "ai", seed: 42, firstPlayer: 1 });
+    const command = chooseAlphaZeroMctsCommand(state, {
+      simulations: 6,
+      deckSamples: 1,
+      timeBudgetMs: 1_000,
+      now: () => 0,
+    });
+
+    expect(command).not.toBeNull();
+    expect(getLegalCommands(state)).toContainEqual(command);
   });
 });
